@@ -1,0 +1,287 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Blockchain Certificate Studio</title>
+
+  <!-- Tailwind CDN for quick styling (no build) -->
+  <script src="https://cdn.tailwindcss.com"></script>
+
+  <!-- Ethers.js v6 -->
+  <script src="https://cdn.jsdelivr.net/npm/ethers@6.6.0/dist/ethers.min.js"></script>
+
+  <!-- nft.storage UMD (for browser pin) -->
+  <script src="https://unpkg.com/nft.storage/dist/bundle.umd.min.js"></script>
+
+  <!-- jsPDF -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+
+  <!-- qrcodejs -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+
+  <style>
+    html,body { height: 100%; }
+    body { background: linear-gradient(#f3f4f6, #eef2ff); font-family: Inter, system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial; }
+  </style>
+</head>
+<body>
+  <div class="min-h-screen flex items-start justify-center p-6">
+    <div class="w-full max-w-xl bg-white rounded-2xl p-6 shadow">
+      <h1 class="text-3xl font-extrabold mb-6">Blockchain Certificate Studio</h1>
+
+      <!-- Environment / Setup inputs -->
+      <div class="mb-4 grid grid-cols-1 gap-2">
+        <label class="text-sm font-medium">NFT.Storage Key (get it free from nft.storage)</label>
+        <input id="nftKey" class="p-2 border rounded" placeholder="Paste NFT.Storage API key (start with 'ey...')" />
+        <label class="text-sm font-medium mt-2">Contract Address</label>
+        <input id="contractAddress" class="p-2 border rounded" placeholder="0x..." />
+        <label class="text-sm font-medium mt-2">Network RPC (optional for read-only checks)</label>
+        <input id="rpcUrl" class="p-2 border rounded" placeholder="Optional RPC URL (e.g. https://rpc.ankr.com/eth_goerli)" />
+      </div>
+
+      <hr class="my-4" />
+
+      <!-- Main form (screenshot style) -->
+      <label class="block font-medium">Student Name</label>
+      <input id="studentName" class="w-full p-2 border rounded mb-3" />
+
+      <label class="block font-medium">Course</label>
+      <input id="course" class="w-full p-2 border rounded mb-3" />
+
+      <label class="block font-medium">Notes</label>
+      <textarea id="notes" class="w-full p-2 border rounded mb-4" rows="4"></textarea>
+
+      <div class="flex flex-wrap gap-3 mb-4">
+        <button id="connectBtn" class="px-4 py-2 rounded bg-blue-600 text-white">Connect MetaMask</button>
+        <button id="issueBtn" class="px-4 py-2 rounded bg-blue-600 text-white">Issue Certificate</button>
+        <button id="downloadBtn" class="px-4 py-2 rounded bg-blue-600 text-white">Download PDF</button>
+        <button id="qrBtn" class="px-4 py-2 rounded bg-blue-600 text-white">Generate QR</button>
+      </div>
+
+      <div id="status" class="mb-3 p-2 bg-slate-100 rounded text-sm"></div>
+
+      <div id="qrWrap" class="mt-3 hidden p-3 bg-slate-50 inline-block rounded"></div>
+
+      <div id="result" class="mt-3 text-sm"></div>
+
+      <div class="mt-6 h-6 bg-black rounded"></div>
+    </div>
+  </div>
+
+<script>
+(async function(){
+  // --- Helpers & initial state ---
+  const connectBtn = document.getElementById('connectBtn');
+  const issueBtn = document.getElementById('issueBtn');
+  const downloadBtn = document.getElementById('downloadBtn');
+  const qrBtn = document.getElementById('qrBtn');
+  const statusEl = document.getElementById('status');
+  const resultEl = document.getElementById('result');
+  const qrWrap = document.getElementById('qrWrap');
+
+  let provider = null;
+  let signer = null;
+  let account = null;
+  let contract = null;
+  let lastCid = null;
+  let lastCertId = null;
+  let lastTxHash = null;
+
+  // Minimal ABI matching the contract you have (issueCertificate signature)
+  const CERT_ABI = [
+    "function issueCertificate(address to, string ipfsHash, string recipientEmailHash) external returns (uint256)",
+    "event CertificateIssued(uint256 indexed id, address indexed to, string ipfsHash)",
+    "function ownerOf(uint256) view returns (address)",
+    "function getCertificate(uint256) view returns (tuple(string ipfsHash, string recipientEmailHash, uint256 issuedAt))"
+  ];
+
+  // Utility: update status
+  function setStatus(s){ statusEl.innerText = s || ''; }
+
+  // Try to preconnect if MetaMask already unlocked
+  if(window.ethereum){
+    try {
+      provider = new ethers.BrowserProvider(window.ethereum);
+      const accounts = await window.ethereum.request({ method: 'eth_accounts' });
+      if(accounts && accounts.length) {
+        account = accounts[0];
+        setStatus('Wallet connected: ' + account);
+      }
+      window.ethereum.on && window.ethereum.on('accountsChanged', (accs)=> {
+        account = accs[0] || null;
+        setStatus(account ? 'Wallet: '+account : 'Wallet disconnected');
+      });
+    } catch(e){ console.warn('preconnect failed', e); }
+  }
+
+  connectBtn.addEventListener('click', async ()=>{
+    if(!window.ethereum) return alert('MetaMask not found. Install MetaMask and try again.');
+    try{
+      await window.ethereum.request({ method: 'eth_requestAccounts' });
+      provider = new ethers.BrowserProvider(window.ethereum);
+      signer = await provider.getSigner();
+      account = await signer.getAddress();
+      setStatus('Connected: ' + account);
+      // if contract address exists, instantiate contract with signer for writes
+      const caddr = document.getElementById('contractAddress').value.trim();
+      if(caddr) contract = new ethers.Contract(caddr, CERT_ABI, signer);
+    }catch(err){
+      console.error(err);
+      alert('Connect failed: ' + (err.message || err));
+    }
+  });
+
+  // Pin metadata to nft.storage using their client UMD (NFTStorage available as window.NFTStorage)
+  async function pinMetadata(metadata){
+    const key = document.getElementById('nftKey').value.trim();
+    if(!key) throw new Error('NFT.Storage API key required (paste in the field).');
+    setStatus('Pinning to nft.storage...');
+    // Using the UMD: window.NFTStorage
+    const client = new window.NFTStorage.NFTStorage({ token: key });
+    // nft.storage accepts File or Blob or JS object; we pass JSON as Blob
+    const blob = new Blob([JSON.stringify(metadata)], { type: 'application/json' });
+    const name = metadata.name || 'certificate';
+    const cidObj = await client.storeBlob(blob); // returns cid string
+    // The UMD storeBlob returns CID as string in many versions; to be safe:
+    const cid = cidObj?.toString ? cidObj.toString() : cidObj;
+    setStatus('Pinned: ' + cid);
+    return cid.replace('ipfs://', '').replace('ipfs/', '').trim();
+  }
+
+  // Hash email for privacy using ethers utils
+  function hashEmail(email){
+    if(!email) return ethers.zeroHash || ethers.keccak256(ethers.toUtf8Bytes(''));
+    // ethers v6: ethers.keccak256
+    return ethers.keccak256(ethers.toUtf8Bytes(email));
+  }
+
+  // Issue certificate: pin metadata then call contract.issueCertificate(...)
+  issueBtn.addEventListener('click', async ()=>{
+    const studentName = document.getElementById('studentName').value.trim();
+    const course = document.getElementById('course').value.trim();
+    const notes = document.getElementById('notes').value.trim();
+    const contractAddress = document.getElementById('contractAddress').value.trim();
+
+    if(!studentName || !course) return alert('Student name and course are required.');
+    if(!account){
+      alert('Connect MetaMask with the OWNER account first (the deployer).');
+      return;
+    }
+    if(!contractAddress) return alert('Set contract address first.');
+
+    // Build metadata object
+    const metadata = {
+      name: studentName,
+      course,
+      notes,
+      issuedBy: account,
+      issuedAt: new Date().toISOString()
+    };
+
+    try{
+      setStatus('Pinning metadata to IPFS (nft.storage)...');
+      const cid = await pinMetadata(metadata);
+      lastCid = cid;
+      setStatus('IPFS CID: ' + cid);
+
+      // Prepare contract
+      if(!signer) {
+        if(!provider) provider = new ethers.BrowserProvider(window.ethereum);
+        signer = await provider.getSigner();
+      }
+      if(!contract || contract.target !== contractAddress) {
+        contract = new ethers.Contract(contractAddress, CERT_ABI, signer);
+      }
+
+      // Compute recipientEmailHash - we'll use student's name + course as recipient field if no email (this avoids empty)
+      const recipientEmail = studentName + '|' + course;
+      const recipientHash = hashEmail(recipientEmail);
+
+      setStatus('Sending mint transaction (MetaMask will prompt)...');
+      // call contract - gas paid by wallet
+      const tx = await contract.issueCertificate(account, cid, recipientHash);
+      setStatus('Transaction sent. Waiting for confirmation: ' + tx.hash);
+      lastTxHash = tx.hash;
+      const receipt = await tx.wait();
+      setStatus('Transaction confirmed: ' + receipt.transactionHash);
+
+      // Parse event to extract certificate id
+      let certId = null;
+      try {
+        for(const log of receipt.logs){
+          try {
+            const parsed = contract.interface.parseLog(log);
+            if(parsed && parsed.name === 'CertificateIssued'){
+              certId = parsed.args[0].toString();
+              break;
+            }
+          } catch(e){ /* skip non-matching log */ }
+        }
+      } catch(e){
+        console.warn('event parse error', e);
+      }
+      lastCertId = certId;
+      resultEl.innerHTML = `<div><strong>Tx:</strong> <a href="#" onclick="window.open('https://etherscan.io/tx/${lastTxHash}','_blank')">${lastTxHash}</a></div>
+                            <div><strong>Cert ID:</strong> ${certId || 'unknown'}</div>
+                            <div><strong>IPFS CID:</strong> <a href="https://ipfs.io/ipfs/${cid}" target="_blank">${cid}</a></div>`;
+      setStatus('Mint successful' + (certId ? (' — Cert ID: '+certId) : ''));
+
+    }catch(err){
+      console.error(err);
+      setStatus('Error: ' + (err.message || err));
+      alert('Issue failed: ' + (err.message || err));
+    }
+  });
+
+  // Download PDF using jsPDF UMD
+  downloadBtn.addEventListener('click', async ()=>{
+    const { jsPDF } = window.jspdf;
+    const studentName = document.getElementById('studentName').value.trim();
+    const course = document.getElementById('course').value.trim();
+    const notes = document.getElementById('notes').value.trim();
+    if(!studentName || !course) return alert('Fill student and course first.');
+
+    const doc = new jsPDF({ orientation: 'landscape' });
+    doc.setFontSize(28);
+    doc.text('Certificate of Completion', 105, 30, { align: 'center' });
+    doc.setFontSize(18);
+    doc.text(`This certifies that`, 105, 50, { align: 'center' });
+    doc.setFontSize(24);
+    doc.text(studentName, 105, 70, { align: 'center' });
+    doc.setFontSize(16);
+    doc.text(`has successfully completed the course: ${course}`, 105, 90, { align: 'center' });
+    if(notes) {
+      doc.setFontSize(12);
+      doc.text(`Notes: ${notes}`, 20, 120);
+    }
+    if(lastCertId) {
+      doc.setFontSize(10);
+      doc.text(`On-chain Cert ID: ${lastCertId}`, 20, 160);
+    }
+    if(lastCid) doc.text(`IPFS CID: ${lastCid}`, 20, 170);
+    doc.save((studentName || 'certificate') + '.pdf');
+  });
+
+  // QR generation
+  qrBtn.addEventListener('click', ()=>{
+    qrWrap.innerHTML = '';
+    qrWrap.classList.remove('hidden');
+    const target = lastCertId ? `${window.location.origin}/verify?certId=${lastCertId}` : (lastCid ? `https://ipfs.io/ipfs/${lastCid}` : null);
+    if(!target) {
+      alert('No cert ID or CID yet. Issue the certificate first (or pin metadata).');
+      return;
+    }
+    // create QR inside qrWrap
+    new QRCode(qrWrap, { text: target, width: 160, height: 160 });
+    // also show a link
+    const link = document.createElement('div');
+    link.className = 'mt-2 text-sm';
+    link.innerHTML = `<a href="${target}" target="_blank" class="underline">${target}</a>`;
+    qrWrap.appendChild(link);
+  });
+
+})();
+</script>
+</body>
+</html>

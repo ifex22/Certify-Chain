@@ -1,0 +1,102 @@
+import { useEffect, useState } from "react";
+import { useNavigate } from "wouter";
+
+// ====== WALLET PLACEHOLDERS ======
+const EVM_WALLET = "YOUR_EVM_WALLET_HERE";
+const SOL_WALLET = "YOUR_SOLANA_WALLET_HERE";
+
+// ====== MAIN PAYGATE COMPONENT ======
+export default function PayGate() {
+  const [paid, setPaid] = useState(false);
+  const navigate = useNavigate();
+
+  // Check if user already paid
+  useEffect(() => {
+    const hasPaid = localStorage.getItem("paid");
+    if (hasPaid === "true") {
+      setPaid(true);
+      navigate("/dashboard");
+    }
+  }, []);
+
+  const payWithMetaMask = async () => {
+    if (!window.ethereum) return alert("MetaMask not installed");
+
+    await window.ethereum.request({ method: "eth_requestAccounts" });
+    const accounts = await window.ethereum.request({ method: "eth_accounts" });
+
+    const tx = {
+      from: accounts[0],
+      to: EVM_WALLET,
+      value: "0x" + (0.002 * 1e18).toString(16), // 0.002 ETH or BNB
+    };
+
+    await window.ethereum.request({
+      method: "eth_sendTransaction",
+      params: [tx],
+    });
+
+    localStorage.setItem("paid", "true");
+    alert("Payment successful!");
+    navigate("/dashboard");
+  };
+
+  const payWithPhantom = async () => {
+    const provider = window.solana;
+    if (!provider || !provider.isPhantom)
+      return alert("Phantom Wallet not installed");
+
+    await provider.connect();
+    const payer = provider.publicKey;
+
+    const { Connection, SystemProgram, Transaction, LAMPORTS_PER_SOL, PublicKey } =
+      window.solanaWeb3;
+
+    const connection = new Connection("https://api.mainnet-beta.solana.com");
+    const receiver = new PublicKey(SOL_WALLET);
+
+    const tx = new Transaction().add(
+      SystemProgram.transfer({
+        fromPubkey: payer,
+        toPubkey: receiver,
+        lamports: 0.05 * LAMPORTS_PER_SOL, // 0.05 SOL
+      })
+    );
+
+    const signed = await provider.signAndSendTransaction(tx);
+    await connection.confirmTransaction(signed.signature);
+
+    localStorage.setItem("paid", "true");
+    alert("Payment successful!");
+    navigate("/dashboard");
+  };
+
+  return (
+    <div className="min-h-screen flex items-center justify-center bg-gray-100 p-6">
+      <div className="bg-white p-8 rounded shadow max-w-md w-full text-center">
+        <h1 className="text-2xl font-bold mb-4">Unlock Certificate Dashboard</h1>
+        <p className="text-gray-600 mb-6">
+          Pay once to unlock the full Certificate Generator forever.
+        </p>
+
+        <button
+          onClick={payWithMetaMask}
+          className="w-full py-3 mb-3 bg-purple-600 text-white rounded"
+        >
+          Pay with MetaMask (0.002 ETH/BNB)
+        </button>
+
+        <button
+          onClick={payWithPhantom}
+          className="w-full py-3 mb-3 bg-indigo-600 text-white rounded"
+        >
+          Pay with Phantom (0.05 SOL)
+        </button>
+
+        <p className="text-xs text-gray-400 mt-4">
+          You can add your wallet addresses in PayGate.tsx anytime.
+        </p>
+      </div>
+    </div>
+  );
+}

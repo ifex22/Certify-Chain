@@ -1,0 +1,353 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Multi-chain Certificate — Create • Hash • Publish</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <script src="https://cdn.tailwindcss.com"></script>
+
+  <!-- ethers for keccak256 & EVM tx helpers -->
+  <script src="https://cdn.jsdelivr.net/npm/ethers@6.6.0/dist/ethers.min.js"></script>
+  <!-- solana web3 for Memo -->
+  <script src="https://unpkg.com/@solana/web3.js@1.73.0/lib/index.iife.min.js"></script>
+  <!-- html2canvas + jspdf for downloads -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+  <style> pre { white-space: pre-wrap; word-break: break-word; } </style>
+</head>
+<body class="bg-slate-50 min-h-screen text-slate-900">
+
+  <div class="max-w-6xl mx-auto p-6">
+    <header class="flex items-center justify-between mb-6">
+      <h1 class="text-2xl font-bold">Multi-Chain Certificate Generator & Verifier</h1>
+      <div class="text-xs text-slate-600">One file. Paste into Replit and run.</div>
+    </header>
+
+    <section class="grid md:grid-cols-2 gap-6">
+
+      <!-- FORM -->
+      <div class="bg-white p-6 rounded shadow">
+        <h2 class="text-lg font-semibold mb-3">Create certificate</h2>
+
+        <label class="block text-sm font-medium">Student Name</label>
+        <input id="student" class="w-full p-2 border rounded mb-3" placeholder="Jane Doe">
+
+        <label class="block text-sm font-medium">Course</label>
+        <input id="course" class="w-full p-2 border rounded mb-3" placeholder="Blockchain 101">
+
+        <label class="block text-sm font-medium">Issuer</label>
+        <input id="issuer" class="w-full p-2 border rounded mb-3" placeholder="ACME Academy">
+
+        <label class="block text-sm font-medium">Date</label>
+        <input id="date" type="date" class="w-full p-2 border rounded mb-3">
+
+        <label class="block text-sm font-medium">Notes (optional)</label>
+        <textarea id="notes" class="w-full p-2 border rounded mb-3" rows="3" placeholder="Remarks..."></textarea>
+
+        <div class="flex gap-2 mt-2">
+          <button onclick="updatePreview()" class="px-3 py-2 bg-blue-600 text-white rounded">Update Preview</button>
+          <button onclick="downloadPNG()" class="px-3 py-2 bg-green-600 text-white rounded">Download PNG</button>
+          <button onclick="downloadPDF()" class="px-3 py-2 bg-indigo-600 text-white rounded">Download PDF</button>
+        </div>
+
+        <hr class="my-4" />
+
+        <h3 class="font-semibold mb-2">Hash & Publish (Proof of existence)</h3>
+        <p class="text-sm text-slate-600 mb-2">Compute a cryptographic hash of the certificate JSON, then publish that hash on-chain (EVM or Solana). Publishing on-chain creates immutable proof with a tx hash.</p>
+
+        <div class="mb-2">
+          <label class="text-sm font-medium">Computed Hash</label>
+          <pre id="certHash" class="p-2 bg-slate-100 rounded text-xs break-all">—</pre>
+        </div>
+
+        <div class="grid grid-cols-1 gap-2">
+          <button onclick="computeHash()" class="px-3 py-2 bg-slate-800 text-white rounded">Compute Hash</button>
+          <button onclick="publishEVM()" class="px-3 py-2 bg-purple-600 text-white rounded">Publish on EVM (MetaMask)</button>
+          <button onclick="publishSolana()" class="px-3 py-2 bg-indigo-500 text-white rounded">Publish on Solana (Phantom Memo)</button>
+          <button onclick="publishTron()" class="px-3 py-2 bg-red-500 text-white rounded">Publish on Tron (attempt)</button>
+        </div>
+
+        <div id="publishStatus" class="mt-3 text-sm text-slate-700"></div>
+      </div>
+
+      <!-- PREVIEW + VERIFY -->
+      <div>
+        <div class="bg-white p-6 rounded shadow mb-4">
+          <div class="flex justify-between items-start">
+            <h2 class="text-lg font-semibold">Certificate Preview</h2>
+            <img src="/mnt/data/Screenshot_20251123_045542_Chrome.jpg" alt="ref" class="w-24 h-14 object-cover opacity-40"/>
+          </div>
+
+          <div id="certificate" class="mt-4 w-full h-[420px] bg-white border-4 border-blue-700 p-6 text-center">
+            <h3 class="text-2xl font-bold text-blue-700 mb-2">Certificate of Completion</h3>
+            <p class="text-lg">This certifies that</p>
+            <p id="pv-student" class="text-xl font-semibold my-4">Student Name</p>
+            <p class="text-lg">has completed</p>
+            <p id="pv-course" class="text-lg font-medium my-3">Course Title</p>
+            <p class="mt-4">Issued by <span id="pv-issuer" class="font-semibold">Issuer</span></p>
+            <p class="mt-2">Date: <span id="pv-date">YYYY-MM-DD</span></p>
+            <p id="pv-notes" class="mt-3 italic text-sm text-slate-600">Notes will appear here</p>
+          </div>
+        </div>
+
+        <div class="bg-white p-6 rounded shadow">
+          <h3 class="text-lg font-semibold mb-2">Verify On-Chain</h3>
+          <p class="text-sm text-slate-600 mb-2">Paste a transaction hash (EVM tx hash or Solana signature) and verify the stored hash matches this certificate.</p>
+
+          <input id="verifyTx" class="w-full p-2 border rounded mb-2" placeholder="Paste tx hash / signature here" />
+          <div class="flex gap-2">
+            <button onclick="verifyEvmTx()" class="px-3 py-2 bg-blue-600 text-white rounded">Verify EVM Tx</button>
+            <button onclick="verifySolTx()" class="px-3 py-2 bg-indigo-600 text-white rounded">Verify Solana Sig</button>
+            <button onclick="verifyTronTx()" class="px-3 py-2 bg-red-500 text-white rounded">Verify Tron TX</button>
+          </div>
+
+          <div id="verifyResult" class="mt-3 text-sm"></div>
+        </div>
+      </div>
+    </section>
+
+    <footer class="mt-6 text-xs text-slate-500">
+      <div>Note: This is a proof-of-existence flow (hash on-chain). For storing full JSON permanently use IPFS + pinning (I can add that later).</div>
+      <div class="mt-1">Tron browser support can be inconsistent; for production on Tron we recommend a small server helper (I can provide).</div>
+    </footer>
+  </div>
+
+<script>
+/* ---------- helpers ---------- */
+function getCertificateObject() {
+  return {
+    student: document.getElementById('student').value || '',
+    course: document.getElementById('course').value || '',
+    issuer: document.getElementById('issuer').value || '',
+    date: document.getElementById('date').value || '',
+    notes: document.getElementById('notes').value || '',
+    createdAt: new Date().toISOString()
+  };
+}
+
+function updatePreview() {
+  const o = getCertificateObject();
+  document.getElementById('pv-student').innerText = o.student || 'Student Name';
+  document.getElementById('pv-course').innerText = o.course || 'Course Title';
+  document.getElementById('pv-issuer').innerText = o.issuer || 'Issuer';
+  document.getElementById('pv-date').innerText = o.date || 'YYYY-MM-DD';
+  document.getElementById('pv-notes').innerText = o.notes || 'Notes will appear here';
+}
+
+/* ---------- downloads ---------- */
+async function downloadPNG() {
+  updatePreview();
+  const node = document.getElementById('certificate');
+  const canvas = await html2canvas(node);
+  const dataUrl = canvas.toDataURL('image/png');
+  const a = document.createElement('a'); a.href = dataUrl; a.download = 'certificate.png'; a.click();
+}
+
+async function downloadPDF() {
+  updatePreview();
+  const node = document.getElementById('certificate');
+  const canvas = await html2canvas(node);
+  const imgData = canvas.toDataURL('image/png');
+  const { jsPDF } = window.jspdf;
+  const pdf = new jsPDF({ orientation: 'landscape', unit: 'px', format: 'a4' });
+  pdf.addImage(imgData, 'PNG', 20, 20, 800, 550);
+  pdf.save('certificate.pdf');
+}
+
+/* ---------- hashing ---------- */
+function computeHash() {
+  const cert = getCertificateObject();
+  const json = JSON.stringify(cert);
+  // use ethers keccak256 over utf8 bytes
+  const bytes = ethers.toUtf8Bytes(json);
+  const hash = ethers.keccak256(bytes);
+  document.getElementById('certHash').innerText = hash;
+  return { hash, json };
+}
+
+/* ---------- EVM publish (MetaMask) ---------- */
+async function publishEVM() {
+  const status = document.getElementById('publishStatus');
+  try {
+    if (!window.ethereum) return alert('MetaMask not found - install MetaMask in your browser.');
+    const { hash } = computeHash();
+    status.innerHTML = 'Requesting MetaMask signature & broadcasting transaction...';
+
+    // ensure accounts
+    await window.ethereum.request({ method: 'eth_requestAccounts' });
+    const accounts = await window.ethereum.request({ method: 'eth_accounts' });
+    const from = accounts[0];
+
+    // send a 0-value tx to self with data = hash (hex). This stores the data in the tx.
+    // NOTE: some RPCs may disallow 0 value to self with data on certain networks; test on testnet first.
+    const txParams = {
+      from,
+      to: from, // send to self
+      value: '0x0',
+      data: hash // hash is already 0x-prefixed
+    };
+
+    const txHash = await window.ethereum.request({
+      method: 'eth_sendTransaction',
+      params: [txParams]
+    });
+
+    status.innerHTML = `EVM transaction sent: <a href="#" onclick="window.open('https://etherscan.io/tx/${txHash}','_blank')">${txHash}</a>`;
+  } catch (err) {
+    console.error(err);
+    status.innerText = 'EVM publish failed: ' + (err.message || err);
+  }
+}
+
+/* ---------- Solana publish (Memo program via Phantom) ---------- */
+async function publishSolana() {
+  const status = document.getElementById('publishStatus');
+  try {
+    if (!window.solana || !window.solana.isPhantom) return alert('Phantom wallet not found in browser.');
+    const { hash } = computeHash();
+
+    // connect
+    await window.solana.connect();
+    const provider = window.solana;
+    const connection = new solanaWeb3.Connection(solanaWeb3.clusterApiUrl('mainnet-beta'));
+
+    // Memo program id (official)
+    const memoProgramId = new solanaWeb3.PublicKey('MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr');
+
+    const instruction = new solanaWeb3.TransactionInstruction({
+      keys: [],
+      programId: memoProgramId,
+      data: Buffer.from(hash) // put hash string into memo
+    });
+
+    const tx = new solanaWeb3.Transaction().add(instruction);
+    const { signature } = await provider.signAndSendTransaction(tx);
+    await connection.confirmTransaction(signature);
+
+    status.innerHTML = `Solana memo sent: <a href="#" onclick="window.open('https://explorer.solana.com/tx/${signature}','_blank')">${signature}</a>`;
+  } catch (err) {
+    console.error(err);
+    status.innerText = 'Solana publish failed: ' + (err.message || err);
+  }
+}
+
+/* ---------- Tron publish (best-effort) ---------- */
+async function publishTron() {
+  const status = document.getElementById('publishStatus');
+  try {
+    if (!window.tronWeb) {
+      return alert('tronWeb / TronLink not detected in this browser (TronLink required for Tron transactions).');
+    }
+    // compute hash
+    const { hash } = computeHash();
+
+    // Tron doesn't have a simple "data" field in sendTransaction; we try to create a transaction to self and attach data via raw transaction param if available.
+    // Best-effort: send 0 TRX to self and return txid; some Tron providers strip data — for production use a server + tronWeb recommended.
+    const from = window.tronWeb.defaultAddress.base58;
+    const to = from;
+    const amountSun = 0; // 0 TRX
+
+    // create transaction
+    const tx = await window.tronWeb.transactionBuilder.sendTrx(to, amountSun, from);
+    // tx is unsigned raw trx; try to add data to tx.raw_data.data (hex)
+    try {
+      const hex = window.tronWeb.toHex(hash).replace(/^0x/, '');
+      tx.raw_data.data = hex;
+    } catch(e) {
+      console.warn('Could not attach data to Tron raw tx, sending tx without memo; TXID will still exist.');
+    }
+    // sign & broadcast
+    const signed = await window.tronWeb.trx.sign(tx);
+    const receipt = await window.tronWeb.trx.sendRawTransaction(signed);
+    const txid = receipt.txid || receipt;
+    status.innerHTML = `Tron tx sent: ${txid} (note: data memo may not be stored on all providers).`;
+  } catch (err) {
+    console.error(err);
+    status.innerText = 'Tron publish failed: ' + (err.message || err);
+  }
+}
+
+/* ---------- verification helpers ---------- */
+
+/* Verify EVM: fetch tx by hash via public RPC (Etherscan is easiest but we will try provider) */
+async function verifyEvmTx() {
+  const id = document.getElementById('verifyTx').value.trim();
+  const resEl = document.getElementById('verifyResult');
+  resEl.innerText = 'Verifying EVM tx...';
+
+  if (!id) return alert('Paste an EVM tx hash first');
+
+  try {
+    // Use ethers default provider (uses public providers)
+    const provider = ethers.getDefaultProvider();
+    const tx = await provider.getTransaction(id);
+    if (!tx) { resEl.innerText = 'Transaction not found (check network).'; return; }
+    const data = tx.data || '';
+    const onchainHash = data.startsWith('0x') ? data : '0x' + data;
+    const { hash: localHash } = computeHash();
+
+    const match = (onchainHash.toLowerCase() === localHash.toLowerCase());
+    resEl.innerHTML = `On-chain data: <code>${onchainHash}</code><br/>Computed local hash: <code>${localHash}</code><br/><strong>${match ? 'MATCH ✅ Certificate verified' : 'MISMATCH ❌ Not the same'}</strong>`;
+  } catch (err) {
+    console.error(err);
+    resEl.innerText = 'EVM verification error: ' + (err.message || err);
+  }
+}
+
+/* Verify Solana: get transaction by signature and parse memo */
+async function verifySolTx() {
+  const sig = document.getElementById('verifyTx').value.trim();
+  const resEl = document.getElementById('verifyResult');
+  if (!sig) return alert('Paste a Solana signature first');
+
+  try {
+    const connection = new solanaWeb3.Connection(solanaWeb3.clusterApiUrl('mainnet-beta'));
+    const tx = await connection.getParsedTransaction(sig, { maxSupportedTransactionVersion: 0 });
+    if (!tx) { resEl.innerText = 'Transaction not found (ensure you are using mainnet signature).'; return; }
+
+    // search for memo instruction
+    const memo = tx.transaction.message.instructions.find(i => i.program === 'spl-memo' || (i.programId && i.programId.toBase58 && i.programId.toBase58() === 'MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr'));
+    let extracted = null;
+    if (memo && memo.data) extracted = memo.data;
+    // fallback: check inner instructions data
+    if (!extracted && tx.meta && tx.meta.logMessages) {
+      // cannot reliably extract; show raw tx
+      resEl.innerText = 'Memo not found in parsed tx; please ensure memo was included when publishing.';
+      return;
+    }
+
+    const { hash: localHash } = computeHash();
+    const match = extracted === localHash;
+    resEl.innerHTML = `On-chain memo: <code>${extracted}</code><br/>Local hash: <code>${localHash}</code><br/><strong>${match ? 'MATCH ✅' : 'MISMATCH ❌'}</strong>`;
+  } catch (err) {
+    console.error(err);
+    resEl.innerText = 'Solana verify error: ' + (err.message || err);
+  }
+}
+
+/* Verify Tron tx: get tx by id and try to read raw_data.data */
+async function verifyTronTx() {
+  const txid = document.getElementById('verifyTx').value.trim();
+  const resEl = document.getElementById('verifyResult');
+  if (!txid) return alert('Paste a Tron TX ID first');
+  if (!window.tronWeb) return alert('tronWeb not found in this browser (TronLink required)');
+
+  try {
+    const tx = await window.tronWeb.trx.getTransaction(txid);
+    if (!tx) { resEl.innerText = 'Tron tx not found'; return; }
+    const dataHex = tx.raw_data && tx.raw_data.data ? tx.raw_data.data : null;
+    const onchain = dataHex ? window.tronWeb.toAscii(dataHex) : null;
+    const { hash: localHash } = computeHash();
+    const match = onchain && (onchain === localHash);
+    resEl.innerHTML = `On-chain data: <code>${onchain}</code><br/>Local hash: <code>${localHash}</code><br/><strong>${match ? 'MATCH ✅' : 'MISMATCH ❌'}</strong>`;
+  } catch (err) {
+    console.error(err);
+    resEl.innerText = 'Tron verify error: ' + (err.message || err);
+  }
+}
+
+/* ---------- init preview ---------- */
+updatePreview();
+</script>
+</body>
+</html>

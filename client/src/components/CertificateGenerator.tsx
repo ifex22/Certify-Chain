@@ -7,7 +7,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Download, FileDown, Loader2, CheckCircle2 } from "lucide-react";
 import html2canvas from "html2canvas";
-const jsPDF = function() { (this as any).addImage = function(){}; (this as any).save = function(){ alert("PDF generation disabled in preview."); }; } as any;
+import jsPDF from "jspdf";
 import MultiChainPublisher from "./MultiChainPublisher";
 
 export default function CertificateGenerator() {
